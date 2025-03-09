@@ -1,4 +1,5 @@
 import io
+import os
 import requests
 from flask import Flask, request, jsonify
 from PIL import Image
@@ -6,10 +7,26 @@ from ultralytics import YOLO
 
 app = Flask(__name__)
 
-# Load your YOLO model (ensure best.pt is in your project folder)
-model = YOLO("best.pt")
+# Function to download best.pt from Google Drive if not found
+def download_model():
+    model_path = "best.pt"
+    if not os.path.exists(model_path):
+        print("Downloading best.pt from Google Drive...")
+        file_id = "1-sTy5PN78zZR3M1AjMzjBlMMtBYeGabP"  # Replace with your actual file ID
+        url = f"https://drive.google.com/uc?id={file_id}"
+        response = requests.get(url)
+        with open(model_path, "wb") as f:
+            f.write(response.content)
+        print("Download complete.")
 
-# Define the six herb classes (must match your training)
+# Ensure the model is available
+download_model()
+
+# Load YOLO model
+model = YOLO("best.pt")
+model.conf = 0.25  # Lower confidence threshold to detect weaker objects
+
+# Define herb classes (must match YOLO training)
 HERB_CLASSES = [
     "Variegated Mexican Mint",
     "Java Pennywort",
@@ -29,21 +46,25 @@ def predict():
     image_url = data["image_url"]
     
     try:
-        # Download the image from the URL
+        # Download the image
         response = requests.get(image_url, stream=True)
-        
-        # Check if the request was successful
         if response.status_code != 200:
             return jsonify({"error": "Failed to download image"}), 400
 
-        # Try to open the image
+        # Open the image
         img = Image.open(response.raw).convert("RGB")
+
+        # Resize to match YOLO training (640x640)
+        img = img.resize((640, 640))
 
     except Exception as e:
         return jsonify({"error": f"Invalid image format: {str(e)}"}), 400
 
-    # Run inference with YOLO
+    # Run inference
     results = model(img)
+
+    # Debugging: Print results to check detection output
+    print("Detection Results:", results)
 
     # If no detections, return "Not a Herb"
     if not results[0].boxes:
@@ -54,8 +75,8 @@ def predict():
     class_id = int(top_box.cls[0].item())
     conf = float(top_box.conf[0].item())
 
-    # Use a confidence threshold (e.g., 0.5)
-    if conf < 0.5:
+    # If confidence is too low, classify as "Not a Herb"
+    if conf < 0.25:
         return jsonify({"herb_name": "Not a Herb", "confidence": conf}), 200
 
     herb_name = HERB_CLASSES[class_id]
