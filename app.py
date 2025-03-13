@@ -30,8 +30,8 @@ download_model()
 # Load YOLO model
 model = YOLO("best.pt")
 
-# ✅ Lower Confidence Threshold
-model.conf = 0.25  # Reduce from 0.5 to 0.25 for more detections
+# ✅ Adjusted Confidence Threshold to 0.8 (Stricter)
+model.conf = 0.8  # Increased threshold to prevent misclassifying non-herbs
 
 # Define herb classes (must match YOLO training)
 HERB_CLASSES = [
@@ -80,8 +80,8 @@ def predict():
         class_id = int(top_box.cls[0].item())
         conf = float(top_box.conf[0].item())
 
-        # ✅ Step 6: Ensure Confidence is Above Threshold
-        if conf < 0.25:  # Lowered from 0.5 to 0.25
+        # ✅ Step 6: Ensure Confidence is Above 0.8 (Stricter than before)
+        if conf < 0.8:  # Increased from 0.75 to 0.8
             return jsonify({"herb_name": "Not a Herb", "confidence": conf}), 200
 
         # ✅ Step 7: Map Class ID to Herb Name
