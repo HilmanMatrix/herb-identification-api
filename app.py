@@ -12,7 +12,7 @@ def download_model():
     model_path = "best.pt"
     if not os.path.exists(model_path):
         print("Downloading best.pt from Google Drive...")
-        file_id = "1-sTy5PN78zZR3M1AjMzjBlMMtBYeGabP"  # Your Google Drive file ID
+        file_id = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"  # ✅ Updated with your correct file ID
         url = f"https://drive.google.com/uc?id={file_id}"
         response = requests.get(url, stream=True)
 
@@ -24,16 +24,16 @@ def download_model():
         else:
             print("Failed to download best.pt")
 
-# Ensure the model is available
+# Ensure the model is downloaded
 download_model()
 
-# Load YOLO model
+# Load the YOLO model
 model = YOLO("best.pt")
 
-# ✅ Adjusted Confidence Threshold to 0.8 (Stricter)
-model.conf = 0.8  # Increased threshold to prevent misclassifying non-herbs
+# Optional: Set a lower threshold to allow weaker detections (your logic will control actual filtering)
+model.conf = 0.25
 
-# Define herb classes (must match YOLO training)
+# Define your 6 herb classes
 HERB_CLASSES = [
     "Variegated Mexican Mint",
     "Java Pennywort",
@@ -53,40 +53,29 @@ def predict():
     image_url = data["image_url"]
     
     try:
-        # ✅ Step 1: Download and Open Image
         response = requests.get(image_url, stream=True)
         if response.status_code != 200:
             return jsonify({"error": "Failed to download image"}), 400
 
         img = Image.open(io.BytesIO(response.content)).convert("RGB")
+        img = img.resize((640, 640))  # Resize for YOLOv8 training format
 
-        # ✅ Step 2: Resize Image to 640x640 (Fixes Mismatched Size Issue)
-        img = img.resize((640, 640))  # Resize to match YOLO training size
-
-        # ✅ Step 3: Run YOLO Inference
         results = model(img)
 
-        # ✅ Debugging: Print Detection Results
-        print("Detection Results:", results)
-
-        # ✅ Step 4: Handle No Detection Case
-        if not results[0].boxes:  # If no objects detected
+        if not results[0].boxes:
             return jsonify({"herb_name": "Not a Herb", "confidence": 0.0}), 200
 
-        # ✅ Step 5: Sort Detections by Confidence and Get the Most Confident One
+        # Sort detections by confidence
         sorted_boxes = sorted(results[0].boxes, key=lambda b: b.conf[0].item(), reverse=True)
-        top_box = sorted_boxes[0]  # Get the highest confidence detection
-
+        top_box = sorted_boxes[0]
         class_id = int(top_box.cls[0].item())
         conf = float(top_box.conf[0].item())
 
-        # ✅ Step 6: Ensure Confidence is Above 0.8 (Stricter than before)
-        if conf < 0.8:  # Increased from 0.75 to 0.8
+        # If confidence is less than 0.8, return "Not a Herb"
+        if conf < 0.8:
             return jsonify({"herb_name": "Not a Herb", "confidence": conf}), 200
 
-        # ✅ Step 7: Map Class ID to Herb Name
         herb_name = HERB_CLASSES[class_id]
-
         return jsonify({"herb_name": herb_name, "confidence": conf}), 200
 
     except Exception as e:
