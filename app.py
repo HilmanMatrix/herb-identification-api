@@ -1,18 +1,16 @@
-import io
-import os
-import requests
+import io, os, requests
 from flask import Flask, request, make_response
 from PIL import Image
 from ultralytics import YOLO
+import torch
+import numpy as np
 
 app = Flask(__name__)
 
-# ─────────────── CONFIG ───────────────
-MODEL_PATH       = "best.pt"
-DRIVE_FILE_ID    = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
-YOLO_CONF        = 0.25    # pre-filter detection threshold (unused for pure classification but left here)
-MIN_CONF         = 0.8     # your cutoff to call it “a herb”
-HERB_CLASSES     = [
+# ───────────────── CONFIGURATION ────────────────────────
+MODEL_PATH      = "best.pt"
+DRIVE_FILE_ID   = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
+HERB_CLASSES    = [
     "Variegated Mexican Mint",
     "Java Pennywort",
     "Mexican Mint",
@@ -20,26 +18,25 @@ HERB_CLASSES     = [
     "Java Tea",
     "Chinese Gynura"
 ]
-# ─────────────────────────────────────────
+CONF_THRESHOLD  = 0.8  # must exceed this to be “a herb”
+# ────────────────────────────────────────────────────────
 
 def download_model():
-    """Download best.pt from Google Drive if it’s not already here."""
+    """Download best.pt from Google Drive if missing."""
     if not os.path.exists(MODEL_PATH):
-        print("Downloading best.pt from Google Drive…")
-        url = f"https://drive.google.com/uc?id={DRIVE_FILE_ID}"
-        resp = requests.get(url, stream=True)
+        url = f"https://drive.google.com/uc?export=download&id={DRIVE_FILE_ID}"
+        resp = requests.get(url, stream=True, timeout=30)
         resp.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
             for chunk in resp.iter_content(1024):
                 f.write(chunk)
-        print("Download complete.")
+        app.logger.info("Downloaded best.pt from Google Drive")
 
-# 1) Ensure the model binary is present
+# ensure we have the model file
 download_model()
 
-# 2) Load the YOLOv8 model (classification)
-model = YOLO(MODEL_PATH)
-model.conf = YOLO_CONF
+# load it _as a classifier_ so results[0].probs exists
+model = YOLO(MODEL_PATH, task="classify")
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -48,50 +45,55 @@ def predict():
         return make_response("Error: No image URL provided", 400)
 
     image_url = payload["image_url"]
-    print("Fetching image from:", image_url)
-    resp = requests.get(image_url, stream=True, timeout=10)
-    if resp.status_code != 200:
-        return make_response(f"Error: Failed to download image ({resp.status_code})", 400)
+    app.logger.info(f"Fetching image from: {image_url}")
+    try:
+        resp = requests.get(image_url, stream=True, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        app.logger.error(f"Failed to download image: {e}")
+        return make_response("Error: Failed to download image", 400)
 
-    # 3) Open & resize
+    # open & resize
     img = Image.open(io.BytesIO(resp.content)).convert("RGB")
     img = img.resize((640, 640))
 
-    # 4) Run the classification model
-    results = model(img)
+    # run the classifier
+    results = model.predict(img, verbose=False)
 
-    # 5) Extract the raw per-class probabilities tensor
-    if not hasattr(results[0], "probs"):
-        # if something’s gone wrong, just bail out
+    # pull out the numpy array of 6 confidences
+    try:
+        probs = results[0].probs
+        if isinstance(probs, torch.Tensor):
+            probs = probs.cpu().numpy()
+        elif isinstance(probs, list):
+            probs = np.array(probs)
+        else:
+            raise ValueError(f"Unexpected probs type: {type(probs)}")
+    except Exception as e:
+        app.logger.error(f"Could not read classification scores: {e}")
         decision = "Not a Herb"
-        print("⚠️  No .probs found; falling back to:", decision)
         return make_response(decision, 200, {"Content-Type": "text/plain"})
 
-    raw_probs = results[0].probs            # an Ultralytics container
-    # 6) Convert to a real NumPy array so we can iterate/index it
-    np_probs  = raw_probs.cpu().numpy()     # now a true np.ndarray
+    # log the full vector for debugging
+    app.logger.info("Raw confidences: " +
+        ", ".join(f"{HERB_CLASSES[i]} {probs[i]:.2f}" for i in range(len(probs)))
+    )
 
-    # 7) Log the full vector so you see e.g. "Mexican Mint 1.00, Java Tea 0.00, …" in Render
-    print("Raw confidences:",
-          ", ".join(f"{HERB_CLASSES[i]} {np_probs[i]:.2f}"
-                    for i in range(len(np_probs))))
+    # pick the top class
+    top_idx  = int(np.argmax(probs))
+    top_conf = float(probs[top_idx])
 
-    # 8) Pick the top class + confidence
-    top_idx  = int(np_probs.argmax())
-    top_conf = float(np_probs[top_idx])
-
-    # 9) Apply your 0.8 cutoff
-    if top_conf < MIN_CONF:
+    # apply your 0.8 cutoff
+    if top_conf < CONF_THRESHOLD:
         decision = "Not a Herb"
     else:
         decision = HERB_CLASSES[top_idx]
 
-    # 10) Print it (for Render logs) and return just the plain text
-    print("Final decision:", decision)
+    app.logger.info(f"Final decision: {decision}")
+    # return _only_ the name, plain‐text
     return make_response(decision, 200, {"Content-Type": "text/plain"})
 
 
 if __name__ == "__main__":
-    # In Render it will pick up $PORT; locally defaults to 5000
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
