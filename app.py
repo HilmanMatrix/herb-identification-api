@@ -1,16 +1,18 @@
-import io, os, requests
-from flask import Flask, request, make_response
+import io
+import os
+import requests
+from flask import Flask, request, Response
 from PIL import Image
 from ultralytics import YOLO
 
 app = Flask(__name__)
 
-# CONFIG
-MODEL_PATH      = "best.pt"
-GOOGLE_DRIVE_ID = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
-CONF_THRESHOLD  = 0.8  # minimum to call it “a herb”
-YOLO_CONF       = 0.25 # pre‐filter threshold
-HERB_CLASSES    = [
+# ───────────────────────── CONFIG ─────────────────────────
+MODEL_PATH     = "best.pt"
+GOOGLE_FILE_ID = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
+YOLO_CONF      = 0.25   # internal filter for YOLOv8 detections
+CONF_THRESHOLD = 0.8    # cutoff for “is it a herb?”
+HERB_CLASSES   = [
     "Variegated Mexican Mint",
     "Java Pennywort",
     "Mexican Mint",
@@ -20,9 +22,10 @@ HERB_CLASSES    = [
 ]
 
 def download_model():
+    """Download best.pt from GDrive if missing."""
     if not os.path.exists(MODEL_PATH):
         print("Downloading best.pt from Google Drive…")
-        url = f"https://drive.google.com/uc?id={GOOGLE_DRIVE_ID}"
+        url = f"https://drive.google.com/uc?id={GOOGLE_FILE_ID}"
         r = requests.get(url, stream=True)
         r.raise_for_status()
         with open(MODEL_PATH, "wb") as f:
@@ -30,54 +33,57 @@ def download_model():
                 f.write(chunk)
         print("Download complete.")
 
-# ensure model, then load it
+# Ensure model file is present, then load it
 download_model()
 model = YOLO(MODEL_PATH)
 model.conf = YOLO_CONF
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    payload = request.get_json(silent=True)
-    if not payload or "image_url" not in payload:
-        return make_response("Error: No image URL provided", 400)
-
-    image_url = payload["image_url"]
+    # 1) parse JSON body
+    data = request.get_json(force=True)
+    if not data or "image_url" not in data:
+        return Response("Error: No image_url provided", status=400)
+    image_url = data["image_url"]
     print("Fetching image from:", image_url)
-    resp = requests.get(image_url, stream=True, timeout=10)
-    if resp.status_code != 200:
-        return make_response(f"Error: Failed to download image ({resp.status_code})", 400)
 
-    # open & resize
-    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-    img = img.resize((640, 640))
+    # 2) download & open image
+    try:
+        r = requests.get(image_url, stream=True, timeout=10)
+        r.raise_for_status()
+        img = Image.open(io.BytesIO(r.content)).convert("RGB").resize((640,640))
+    except Exception as e:
+        print("❌ Failed to fetch/process image:", e)
+        return Response("Error: Could not download or process image", status=400)
 
-    # run detection
+    # 3) run YOLO detection
     results = model(img)
 
-    # no boxes → not a herb
-    if not results[0].boxes:
-        decision = "Not a Herb"
-        print("Decision:", decision)
-        return make_response(decision, 200, {"Content-Type": "text/plain"})
+    # 4) extract all confidences for Render logs
+    confs = [b.conf[0].item() for b in results[0].boxes]
+    names = [HERB_CLASSES[int(b.cls[0].item())] for b in results[0].boxes]
+    if confs:
+        # log “Mexican Mint 1.00, Java Tea 0.00, …”
+        log_line = ", ".join(f"{n} {c:.2f}" for n,c in zip(names, confs))
+        print("Raw detections:", log_line)
+    else:
+        print("Raw detections: (none)")
 
-    # sort by confidence desc, pick top
-    boxes = sorted(
-        results[0].boxes,
-        key=lambda b: b.conf[0].item(),
-        reverse=True
-    )
-    top = boxes[0]
-    cls_id = int(top.cls[0].item())
-    conf   = float(top.conf[0].item())
-
-    # apply threshold
-    if conf < CONF_THRESHOLD:
+    # 5) decide top prediction
+    if not confs:
         decision = "Not a Herb"
     else:
-        decision = HERB_CLASSES[cls_id]
+        # find highest-confidence box
+        top_idx = max(range(len(confs)), key=lambda i: confs[i])
+        top_conf = confs[top_idx]
+        if top_conf < CONF_THRESHOLD:
+            decision = "Not a Herb"
+        else:
+            decision = names[top_idx]
 
-    print("Decision:", decision)
-    return make_response(decision, 200, {"Content-Type": "text/plain"})
+    # 6) log & return _only_ that decision
+    print("Final decision:", decision)
+    return Response(decision, mimetype="text/plain")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
