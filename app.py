@@ -6,20 +6,18 @@ from ultralytics.engine.results import Probs
 
 app = Flask(__name__)
 
-# ───── CONFIG ─────
-MODEL_PATH    = "best.pt"
-GOOGLE_ID     = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
-YOLO_CONF     = 0.25
-CONF_CUTOFF   = 0.8
+MODEL_PATH   = "best.pt"
+GOOGLE_ID    = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
+YOLO_CONF    = 0.25
+CONF_CUTOFF  = 0.8
 HERB_CLASSES = [
     "Variegated Mexican Mint",
-    "Mexican Mint",
+    "Mexican Mint",        # ← make sure this sits at index 1
     "Java Tea",
     "Java Pennywort",
     "Green Chiretta",
     "Chinese Gynura"
 ]
-# ──────────────────
 
 def download_model():
     if not os.path.exists(MODEL_PATH):
@@ -33,15 +31,15 @@ def download_model():
 
 download_model()
 model = YOLO(MODEL_PATH)
-model.conf = YOLO_CONF  # no-op for classify but OK
+model.conf = YOLO_CONF
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json(force=True)
-    if "image_url" not in data:
+    payload = request.get_json(force=True)
+    if not payload or "image_url" not in payload:
         return make_response("Error: No image URL provided", 400)
 
-    url = data["image_url"]
+    url = payload["image_url"]
     print("Fetching:", url)
     resp = requests.get(url, timeout=10)
     if resp.status_code != 200:
@@ -53,13 +51,14 @@ def predict():
     results = model(img)
     p: Probs = results[0].probs
 
-    # Log entire vector (optional):
+    # optional full log
     print("Raw confs:",
           ", ".join(f"{HERB_CLASSES[i]} {p[i]:.2f}"
                     for i in range(len(HERB_CLASSES))))
 
     top_idx  = int(p.top1)
     top_conf = float(p.top1conf)
+
     if top_conf < CONF_CUTOFF:
         decision = "Not a Herb"
     else:
