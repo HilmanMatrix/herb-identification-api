@@ -10,12 +10,12 @@ GOOGLE_ID    = "107Egyp0zJih7XTlNq2pJMFsb1JSiSPK2"
 YOLO_CONF    = 0.25
 CONF_CUTOFF  = 0.8
 HERB_CLASSES = [
-    "Variegated Mexican Mint",
-    "Mexican Mint",
-    "Java Tea",
-    "Java Pennywort",
+    "Chinese Gynura",
     "Green Chiretta",
-    "Chinese Gynura"
+    "Java Pennywort",
+    "Java Tea",
+    "Mexican Mint",
+    "Variegated Mexican Mint"
 ]
 
 def download_model():
